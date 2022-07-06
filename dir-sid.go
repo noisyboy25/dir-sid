@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/hectane/go-acl/api"
 	"golang.org/x/sys/windows"
@@ -23,15 +25,13 @@ func main() {
 		path = args[1]
 	}
 
-	i, err := DirSid(path)
-	if err != nil {
-		panic(err)
-	}
+	start := time.Now()
+	i := GetDirInfo(path)
+	t := time.Since(start)
 
 	g := map[string]int64{}
 
 	for _, fi := range i {
-		fmt.Printf("%v\t%s\t%s\n", fi.Size, fi.OwnerSid, fi.Path)
 		g[fi.OwnerSid] += fi.Size
 	}
 
@@ -39,34 +39,47 @@ func main() {
 		fmt.Printf("\033[32m%d\t%s\n\033[0m", size, sid)
 	}
 
+	fmt.Printf("Completed in: %v\n", t)
 }
 
-func DirSid(path string) ([]FileInfo, error) {
-	var fileInfo []FileInfo
+// GetDirInfo returns the directory information for the given path
+func GetDirInfo(path string) (fileInfo []FileInfo) {
+	wg := &sync.WaitGroup{}
+	c := make(chan FileInfo)
 
-	fileStat, err := os.Stat(path)
-	if err != nil {
-		return nil, err
+	wg.Add(1)
+	go func() {
+		pushFileInfo(path, wg, c)
+		wg.Wait()
+		close(c)
+	}()
+
+	for i := range c {
+		fileInfo = append(fileInfo, i)
 	}
+
+	return fileInfo
+}
+
+// TODO: error handling
+//
+// pushFileInfo pushes the file information to the channel
+func pushFileInfo(path string, wg *sync.WaitGroup, c chan FileInfo) {
+	defer wg.Done()
+	fileStat, _ := os.Stat(path)
 
 	if fileStat.IsDir() {
-		files, err := ioutil.ReadDir(path)
-		if err != nil {
-			return nil, err
-		}
+		files, _ := ioutil.ReadDir(path)
 		for _, f := range files {
-			i, err := DirSid(path + "\\" + f.Name())
-			if err != nil {
-				return nil, err
-			}
-			fileInfo = append(fileInfo, i...)
+			wg.Add(1)
+			go pushFileInfo(path+"\\"+f.Name(), wg, c)
 		}
 	} else {
-		fileInfo = append(fileInfo, FileInfo{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()})
+		c <- FileInfo{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}
 	}
-	return fileInfo, nil
 }
 
+// GetDirInfo returns the file information for the given path
 func GetFileSid(path string) string {
 	var owner *windows.SID
 
