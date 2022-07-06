@@ -54,12 +54,19 @@ func GetDirInfo(path string, ctx context.Context) (fileInfo []Info, err error) {
 
 	go func() {
 		defer close(c)
-		err = pushFileInfo(path, eg, ctx, c)
+		eg.Go(func() error {
+			err := pushFileInfo(path, eg, ctx, c)
+			return err
+		})
 		eg.Wait()
 	}()
 
 	for i := range c {
 		fileInfo = append(fileInfo, i)
+	}
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
 	}
 
 	return fileInfo, err
@@ -87,7 +94,11 @@ func pushFileInfo(path string, eg *errgroup.Group, ctx context.Context, c chan I
 			}(f)
 		}
 	} else {
-		c <- Info{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}
+		select {
+		case c <- Info{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
