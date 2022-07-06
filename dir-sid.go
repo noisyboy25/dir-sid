@@ -1,17 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/hectane/go-acl/api"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/windows"
 )
 
-type FileInfo struct {
+type Info struct {
 	Path     string
 	OwnerSid string
 	Size     int64
@@ -26,7 +27,11 @@ func main() {
 	}
 
 	start := time.Now()
-	i := GetDirInfo(path)
+	i, err := GetDirInfo(path, context.Background())
+	if err != nil {
+		panic(err)
+	}
+
 	t := time.Since(start)
 
 	g := map[string]int64{}
@@ -43,40 +48,48 @@ func main() {
 }
 
 // GetDirInfo returns the directory information for the given path
-func GetDirInfo(path string) (fileInfo []FileInfo) {
-	wg := &sync.WaitGroup{}
-	c := make(chan FileInfo)
+func GetDirInfo(path string, ctx context.Context) (fileInfo []Info, err error) {
+	eg, ctx := errgroup.WithContext(ctx)
+	c := make(chan Info)
 
-	wg.Add(1)
 	go func() {
-		pushFileInfo(path, wg, c)
-		wg.Wait()
-		close(c)
+		defer close(c)
+		err = pushFileInfo(path, eg, ctx, c)
+		eg.Wait()
 	}()
 
 	for i := range c {
 		fileInfo = append(fileInfo, i)
 	}
 
-	return fileInfo
+	return fileInfo, err
 }
 
-// TODO: error handling
-//
 // pushFileInfo pushes the file information to the channel
-func pushFileInfo(path string, wg *sync.WaitGroup, c chan FileInfo) {
-	defer wg.Done()
-	fileStat, _ := os.Stat(path)
+func pushFileInfo(path string, eg *errgroup.Group, ctx context.Context, c chan Info) error {
+	fileStat, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
 
 	if fileStat.IsDir() {
-		files, _ := ioutil.ReadDir(path)
+		files, err := ioutil.ReadDir(path)
+		if err != nil {
+			return err
+		}
+
 		for _, f := range files {
-			wg.Add(1)
-			go pushFileInfo(path+"\\"+f.Name(), wg, c)
+			func(f os.FileInfo) {
+				eg.Go(func() error {
+					err := pushFileInfo(path+"\\"+f.Name(), eg, ctx, c)
+					return err
+				})
+			}(f)
 		}
 	} else {
-		c <- FileInfo{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}
+		c <- Info{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}
 	}
+	return nil
 }
 
 // GetDirInfo returns the file information for the given path
