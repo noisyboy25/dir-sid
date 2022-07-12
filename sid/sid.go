@@ -4,7 +4,6 @@ package sid
 
 import (
 	"context"
-	"fmt"
 	"io/ioutil"
 	"os"
 
@@ -67,16 +66,21 @@ func pushFileInfo(path string, eg *errgroup.Group, ctx context.Context, c chan I
 		}
 	} else {
 		select {
-		case c <- Info{Path: path, OwnerSid: GetFileSid(path), Size: fileStat.Size()}:
 		case <-ctx.Done():
 			return ctx.Err()
+		default:
+			ownerId, err := GetFileSid(path)
+			if err != nil {
+				return err
+			}
+			c <- Info{Path: path, OwnerSid: ownerId, Size: fileStat.Size()}
 		}
 	}
 	return nil
 }
 
 // GetDirInfo returns the file information for the given path
-func GetFileSid(path string) string {
+func GetFileSid(path string) (string, error) {
 	var owner *windows.SID
 
 	err := api.GetNamedSecurityInfo(
@@ -90,8 +94,8 @@ func GetFileSid(path string) string {
 		nil,
 	)
 	if err != nil {
-		fmt.Println(err)
+		return "", err
 	}
 
-	return owner.String()
+	return owner.String(), nil
 }
